@@ -12,6 +12,8 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 import 'package:video_player/video_player.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
+// APPLE FULLSCREEN FIX: Import for user agent detection
+import 'dart:html' as html;
 
 typedef ChewieRoutePageBuilder =
     Widget Function(
@@ -40,6 +42,9 @@ class Chewie extends StatefulWidget {
 class ChewieState extends State<Chewie> {
   bool _isFullScreen = false;
 
+  // APPLE FULLSCREEN FIX: Add timer management
+  final List<Timer> _activeTimers = [];
+
   bool get isControllerFullScreen => widget.controller.isFullScreen;
   late PlayerNotifier notifier;
 
@@ -54,6 +59,8 @@ class ChewieState extends State<Chewie> {
   void dispose() {
     widget.controller.removeListener(listener);
     notifier.dispose();
+    // APPLE FULLSCREEN FIX: Cancel all active timers
+    _cancelAllTimers();
     super.dispose();
   }
 
@@ -70,9 +77,11 @@ class ChewieState extends State<Chewie> {
 
   Future<void> listener() async {
     if (isControllerFullScreen && !_isFullScreen) {
+      print("APPLE FIX: Entering fullscreen");
       _isFullScreen = isControllerFullScreen;
       await _pushFullScreenWidget(context);
     } else if (_isFullScreen) {
+      print("APPLE FIX: Exiting fullscreen");
       Navigator.of(
         context,
         rootNavigator: widget.controller.useRootNavigator,
@@ -161,13 +170,40 @@ class ChewieState extends State<Chewie> {
       WakelockPlus.enable();
     }
 
+    print(
+      "APPLE FIX: Before Navigator.push - Video playing: ${widget.controller.videoPlayerController.value.isPlaying}",
+    );
+    print(
+      "APPLE FIX: Before Navigator.push - Video position: ${widget.controller.videoPlayerController.value.position}",
+    );
+
     await Navigator.of(
       context,
       rootNavigator: widget.controller.useRootNavigator,
     ).push(route);
 
+    print(
+      "APPLE FIX: After Navigator.pop - Video playing: ${widget.controller.videoPlayerController.value.isPlaying}",
+    );
+    print(
+      "APPLE FIX: After Navigator.pop - Video position: ${widget.controller.videoPlayerController.value.position}",
+    );
+
     if (kIsWeb) {
-      _reInitializeControllers();
+      // APPLE FULLSCREEN FIX: Skip reinitialization on Apple browsers to prevent video destruction
+
+      bool _isAppleGrover = _isAppleBrowser();
+      print("_isAppleGrover ===>>> $_isAppleGrover");
+      if (!_isAppleGrover) {
+        print(
+          "APPLE FIX: Using original _reInitializeControllers for non-Apple browser",
+        );
+        _reInitializeControllers();
+      } else {
+        // For Apple browsers, use smooth exit like smooth entry
+        print("APPLE FIX: Using onExitFullScreen for Apple browser");
+        onExitFullScreen();
+      }
     }
 
     _isFullScreen = false;
@@ -176,21 +212,22 @@ class ChewieState extends State<Chewie> {
     if (!widget.controller.allowedScreenSleep) {
       WakelockPlus.disable();
     }
-
-    SystemChrome.setEnabledSystemUIMode(
-      SystemUiMode.manual,
-      overlays: widget.controller.systemOverlaysAfterFullScreen,
-    );
-    SystemChrome.setPreferredOrientations(
-      widget.controller.deviceOrientationsAfterFullScreen,
-    );
   }
 
   void onEnterFullScreen() {
+    print("APPLE FIX: onEnterFullScreen called");
+    print(
+      "APPLE FIX: Video playing before fullscreen: ${widget.controller.videoPlayerController.value.isPlaying}",
+    );
+    print(
+      "APPLE FIX: Video position before fullscreen: ${widget.controller.videoPlayerController.value.position}",
+    );
+
     final videoWidth = widget.controller.videoPlayerController.value.size.width;
     final videoHeight =
         widget.controller.videoPlayerController.value.size.height;
 
+    print("APPLE FIX: Video size: ${videoWidth}x${videoHeight}");
     SystemChrome.setEnabledSystemUIMode(SystemUiMode.manual, overlays: []);
 
     // if (widget.controller.systemOverlaysOnEnterFullScreen != null) {
@@ -233,18 +270,216 @@ class ChewieState extends State<Chewie> {
         SystemChrome.setPreferredOrientations(DeviceOrientation.values);
       }
     }
+
+    print("APPLE FIX: onEnterFullScreen completed");
+    print(
+      "APPLE FIX: Video playing after fullscreen setup: ${widget.controller.videoPlayerController.value.isPlaying}",
+    );
+    print(
+      "APPLE FIX: Video position after fullscreen setup: ${widget.controller.videoPlayerController.value.position}",
+    );
+
+    // APPLE FULLSCREEN FIX: Check and fix desync when entering fullscreen
+    if (kIsWeb && _isAppleBrowser()) {
+      print("APPLE FIX: Checking for desync on fullscreen ENTRY");
+      Timer(const Duration(milliseconds: 100), () {
+        _checkAndFixFullscreenDesync();
+      });
+      Timer(const Duration(milliseconds: 300), () {
+        _checkAndFixFullscreenDesync();
+      });
+      Timer(const Duration(milliseconds: 500), () {
+        _checkAndFixFullscreenDesync();
+      });
+    }
+  }
+
+  void onExitFullScreen() {
+    print("APPLE FIX: onExitFullScreen called");
+
+    // CAPTURE STATE IMMEDIATELY before Flutter destroys DOM
+    final wasPlaying = widget.controller.videoPlayerController.value.isPlaying;
+    final currentPosition =
+        widget.controller.videoPlayerController.value.position;
+
+    print(
+      "APPLE FIX: Captured state - playing: $wasPlaying, position: $currentPosition",
+    );
+
+    final videoWidth = widget.controller.videoPlayerController.value.size.width;
+    final videoHeight =
+        widget.controller.videoPlayerController.value.size.height;
+    print("APPLE FIX: Video size: ${videoWidth}x${videoHeight}");
+
+    // Restore system UI overlays after fullscreen
+    SystemChrome.setEnabledSystemUIMode(
+      SystemUiMode.manual,
+      overlays: widget.controller.systemOverlaysAfterFullScreen,
+    );
+
+    // Restore device orientations after fullscreen
+    SystemChrome.setPreferredOrientations(
+      widget.controller.deviceOrientationsAfterFullScreen,
+    );
+
+    print("APPLE FIX: System UI configured");
+
+    // FORCE IMMEDIATE RECREATION - assume DOM will be destroyed
+    print("APPLE FIX: Forcing immediate recreation with captured state");
+    _forceImmediateRecreation(wasPlaying, currentPosition);
   }
 
   ///When viewing full screen on web, returning from full screen causes original video to lose the picture.
   ///We re initialise controllers for web only when returning from full screen
   void _reInitializeControllers() {
+    print(
+      "APPLE FIX: _reInitializeControllers called (original Chewie behavior)",
+    );
     final prevPosition = widget.controller.videoPlayerController.value.position;
+    print("APPLE FIX: Saving position before reinit: $prevPosition");
     widget.controller.videoPlayerController.initialize().then((_) async {
+      print("APPLE FIX: VideoPlayerController.initialize() completed");
       widget.controller._initialize();
+      print("APPLE FIX: ChewieController._initialize() completed");
       widget.controller.videoPlayerController.seekTo(prevPosition);
+      print("APPLE FIX: seekTo($prevPosition) completed");
       await widget.controller.videoPlayerController.play();
+      print("APPLE FIX: play() completed");
       widget.controller.videoPlayerController.pause();
+      print("APPLE FIX: pause() completed - reinit finished");
     });
+  }
+
+  // APPLE FULLSCREEN FIX: Force immediate recreation with captured state
+  void _forceImmediateRecreation(bool wasPlaying, Duration position) {
+    print("APPLE FIX: _forceImmediateRecreation called");
+    print(
+      "APPLE FIX: Target state - playing: $wasPlaying, position: $position",
+    );
+
+    widget.controller.videoPlayerController
+        .initialize()
+        .then((_) async {
+          print("APPLE FIX: VideoPlayerController.initialize() completed");
+
+          // Set looping state
+          await widget.controller.videoPlayerController.setLooping(
+            widget.controller.looping,
+          );
+          print("APPLE FIX: Looping configured");
+
+          // Restore position
+          await widget.controller.videoPlayerController.seekTo(position);
+          print("APPLE FIX: Position restored to $position");
+
+          // Restore playing state
+          if (wasPlaying) {
+            await widget.controller.videoPlayerController.play();
+            print("APPLE FIX: Video playing restored");
+          } else {
+            print("APPLE FIX: Video kept paused as it was");
+          }
+
+          print("APPLE FIX: Immediate recreation completed successfully");
+        })
+        .catchError((error) {
+          print("APPLE FIX: Error during immediate recreation: $error");
+        });
+  }
+
+  // APPLE FULLSCREEN FIX: Detect Apple browsers (Safari, Chrome on macOS)
+  bool _isAppleBrowser() {
+    if (!kIsWeb) return false;
+    try {
+      final userAgent = html.window.navigator.userAgent;
+      print("APPLE FIX: User Agent: $userAgent");
+      final isApple =
+          userAgent.contains('Mac OS X') || userAgent.contains('Macintosh');
+      print("APPLE FIX: Is Apple Browser: $isApple");
+      return isApple;
+    } catch (e) {
+      print("APPLE FIX: Error detecting browser: $e");
+      return false;
+    }
+  }
+
+  // APPLE FULLSCREEN FIX: Check and fix desync when entering or exiting fullscreen
+  void _checkAndFixFullscreenDesync() {
+    try {
+      final controller = widget.controller.videoPlayerController;
+      final videoElements = html.document.getElementsByTagName('video');
+
+      print("APPLE FIX: _checkAndFixFullscreenDesync called");
+      print(
+        "APPLE FIX: Controller says playing: ${controller.value.isPlaying}",
+      );
+
+      if (videoElements.isNotEmpty) {
+        final video = videoElements.first as html.VideoElement;
+        print("APPLE FIX: DOM video paused: ${video.paused}");
+
+        // If controller says playing but DOM is paused (common Apple fullscreen bug)
+        if (controller.value.isPlaying && video.paused) {
+          print(
+            "APPLE FIX: DESYNC DETECTED - Controller says playing but DOM is paused",
+          );
+          print("APPLE FIX: Forcing DOM video to play");
+
+          video
+              .play()
+              .then((_) {
+                print("APPLE FIX: DOM video play successful");
+              })
+              .catchError((error) {
+                print("APPLE FIX: DOM video play failed: $error");
+                // Try controller play as fallback
+                controller
+                    .play()
+                    .then((_) {
+                      print("APPLE FIX: Controller play fallback successful");
+                    })
+                    .catchError((controllerError) {
+                      print(
+                        "APPLE FIX: Controller play fallback failed: $controllerError",
+                      );
+                    });
+              });
+        }
+        // If both are paused, force both to play
+        else if (!controller.value.isPlaying && video.paused) {
+          print("APPLE FIX: Both paused, forcing both to play");
+          video.play();
+          controller
+              .play()
+              .then((_) {
+                print("APPLE FIX: Both forced to play successful");
+              })
+              .catchError((error) {
+                print("APPLE FIX: Controller play failed: $error");
+              });
+        } else {
+          print("APPLE FIX: Controller and DOM are in sync");
+        }
+      } else {
+        print("APPLE FIX: No video elements found");
+      }
+    } catch (e) {
+      print("APPLE FIX: Error in _checkAndFixFullscreenDesync: $e");
+    }
+  }
+
+  // APPLE FULLSCREEN FIX: Timer management functions
+  void _addTimer(Timer timer) {
+    _activeTimers.add(timer);
+  }
+
+  void _cancelAllTimers() {
+    final timerCount = _activeTimers.length;
+    for (final timer in _activeTimers) {
+      timer.cancel();
+    }
+    _activeTimers.clear();
+    print("APPLE FIX: Cancelled $timerCount active timers");
   }
 }
 
